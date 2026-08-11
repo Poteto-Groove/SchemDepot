@@ -1,0 +1,15 @@
+name: SchemDepot
+version: '${version}'
+main: io.github.potetogroove.schemdepot.SchemDepotPlugin
+description: A lightweight collaborative FastAsyncWorldEdit asset registry.
+api-version: '26.1'
+
+dependencies:
+  server:
+    FastAsyncWorldEdit:
+      load: BEFORE
+      required: true
+      # SchemDepot compiles against the WorldEdit public API but resolves those
+      # com.sk89q.worldedit.* classes from FAWE at runtime, so FAWE's classpath
+      # must be joined. Setting this to false causes NoClassDefFoundError.
+      join-classpath: true

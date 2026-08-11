@@ -1,0 +1,28 @@
+# SchemDepot 設定ファイル
+# 詳細は docs/SchemDepot_DESIGN.md セクション16を参照。
+
+storage:
+  # アセットレジストリ(メタデータ)を保持する SQLite データベースファイル名
+  database-file: "assets.db"
+  # 登録済みスキマティクス(.schem)の保存ディレクトリ
+  schematics-directory: "schematics"
+  # 一時ファイル(書き込み中)の保存ディレクトリ
+  temp-directory: "tmp"
+  # 削除時の一時退避先ディレクトリ
+  trash-directory: "trash"
+
+list:
+  # /sd list の1ページあたりの表示件数
+  page-size: 8
+
+paste:
+  # true にすると空気ブロックを無視してペーストする(WorldEdit -a 相当)
+  ignore-air-by-default: false
+  # true にするとエンティティも含めてペーストする
+  include-entities: false
+  # true にするとバイオーム情報も含めてペーストする
+  include-biomes: false
+
+limits:
+  # 0 = FAWE/サーバー側の制限のみに従う(このプラグイン独自の制限を設けない)
+  max-volume: 0
