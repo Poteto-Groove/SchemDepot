@@ -87,7 +87,7 @@ class PasteService(
     /**
      * Loads the schematic at [path] into a new, plugin-owned [Clipboard] (SS10.3).
      *
-     * The format is auto-detected with `ClipboardFormats.findByPath`, so schematics written by
+     * The format is auto-detected with `ClipboardFormats.findByFile`, so schematics written by
      * other tools (MCEdit, Sponge v1/v2/v3) still load. The
      * [com.sk89q.worldedit.extent.clipboard.io.ClipboardReader] is always closed via `use`.
      *
@@ -101,8 +101,12 @@ class PasteService(
             return LoadResult.FileMissing
         }
 
-        // Verified: ClipboardFormats.findByPath(java.nio.file.Path): ClipboardFormat (nullable).
-        val format = ClipboardFormats.findByPath(path)
+        // MUST stay on the File overload (design doc SS10.3). FastAsyncWorldEdit ships its own
+        // com.sk89q.worldedit fork, and while upstream WorldEdit 7.4.5 - which SchemDepot compiles
+        // against - also offers findByPath(java.nio.file.Path), FAWE 2.15.3 does NOT. Calling the
+        // Path overload compiles cleanly and then fails at runtime with NoSuchMethodError.
+        // Verified against the FAWE runtime jar: `static ClipboardFormat findByFile(java.io.File)`.
+        val format = ClipboardFormats.findByFile(path.toFile())
         if (format == null) {
             logger.warning("Unrecognised schematic format, refusing to paste: $path")
             return LoadResult.UnknownFormat
