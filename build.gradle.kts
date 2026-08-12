@@ -63,6 +63,16 @@ tasks.processResources {
     }
 }
 
+// The shipped artifact is the shaded one, so it takes the unclassified name. The plain `jar`
+// task must therefore be pushed to a different file name: both tasks default to
+// build/libs/SchemDepot-<version>.jar, and whichever ran last silently overwrote the other.
+// Running `jar` after `shadowJar` replaced the 14 MB fat jar with a 190 KB thin jar that has no
+// bundled Kotlin stdlib, which surfaced on a live server as
+// NoClassDefFoundError: kotlin/collections/ArraysUtilJVM.
+tasks.jar {
+    archiveClassifier.set("thin")
+}
+
 tasks.shadowJar {
     archiveClassifier.set("")
     relocate("org.sqlite", "io.github.potetogroove.schemdepot.libs.sqlite")
@@ -75,6 +85,9 @@ tasks.build {
 
 tasks.runServer {
     minecraftVersion("26.1.2")
+
+    // Be explicit about which artifact the test server loads: the shaded jar, never the thin one.
+    pluginJars(tasks.shadowJar.flatMap { it.archiveFile })
 
     downloadPlugins {
         // FastAsyncWorldEdit 2.15.3, verified to exist on Modrinth
