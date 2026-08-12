@@ -390,6 +390,107 @@ class AssetServiceTest {
         )
     }
 
+    // -------------------------------------------------------------------------------------
+    // SS20/SS30-20/21 - an unexpected Throwable escaping a worker-thread operation must never
+    // kill the worker thread; it must always produce an InternalError result for the callback.
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `list reports InternalError instead of propagating an Error thrown by the repository`() {
+        fakeRepository.countError = NoSuchMethodError("simulated linkage failure")
+
+        var result: ListResult? = null
+        service.list(1, { true }) { result = it }
+
+        assertTrue(result is ListResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `list reports InternalError instead of propagating an unexpected RuntimeException from the repository`() {
+        fakeRepository.countError = IllegalStateException("simulated unexpected failure")
+
+        var result: ListResult? = null
+        service.list(1, { true }) { result = it }
+
+        assertTrue(result is ListResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `info reports InternalError instead of propagating an Error thrown by the repository`() {
+        fakeRepository.findByNameError = NoSuchMethodError("simulated linkage failure")
+
+        var result: InfoResult? = null
+        service.info("OakTree", { true }) { result = it }
+
+        assertTrue(result is InfoResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `info reports InternalError instead of propagating an unexpected RuntimeException from the repository`() {
+        fakeRepository.findByNameError = IllegalStateException("simulated unexpected failure")
+
+        var result: InfoResult? = null
+        service.info("OakTree", { true }) { result = it }
+
+        assertTrue(result is InfoResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `rename reports InternalError instead of propagating an Error thrown by the repository`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.existsByNameError = NoSuchMethodError("simulated linkage failure")
+
+        var result: RenameResult? = null
+        service.rename(ownerUuid, "OakTree", "LargeOak", { true }) { result = it }
+
+        assertTrue(result is RenameResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `rename reports InternalError instead of propagating an unexpected RuntimeException from the repository`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.existsByNameError = IllegalStateException("simulated unexpected failure")
+
+        var result: RenameResult? = null
+        service.rename(ownerUuid, "OakTree", "LargeOak", { true }) { result = it }
+
+        assertTrue(result is RenameResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `remove reports InternalError instead of propagating an Error thrown by the repository`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.deleteError = NoSuchMethodError("simulated linkage failure")
+
+        var result: RemoveResult? = null
+        service.remove(ownerUuid, "OakTree", { true }) { result = it }
+
+        assertTrue(result is RemoveResult.InternalError, "expected InternalError but was $result")
+    }
+
+    @Test
+    fun `remove reports InternalError instead of propagating an unexpected RuntimeException from the repository`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.deleteError = IllegalStateException("simulated unexpected failure")
+
+        var result: RemoveResult? = null
+        service.remove(ownerUuid, "OakTree", { true }) { result = it }
+
+        assertTrue(result is RemoveResult.InternalError, "expected InternalError but was $result")
+    }
+
     /** In-memory fake [AssetRepository] for unit testing [AssetService] without SQLite. */
     private class FakeAssetRepository : AssetRepository {
         val assets: MutableMap<UUID, Asset> = linkedMapOf()
@@ -397,8 +498,22 @@ class AssetServiceTest {
         /** When set, [insert] throws this instead of storing the asset (simulates a DB failure). */
         var insertException: Exception? = null
 
-        override fun findByName(normalizedName: String): Asset? =
-            assets.values.firstOrNull { it.normalizedName == normalizedName }
+        /** When set, [count] throws this instead of returning normally (simulates any Throwable). */
+        var countError: Throwable? = null
+
+        /** When set, [findByName] throws this instead of returning normally. */
+        var findByNameError: Throwable? = null
+
+        /** When set, [existsByName] throws this instead of returning normally. */
+        var existsByNameError: Throwable? = null
+
+        /** When set, [delete] throws this instead of returning normally. */
+        var deleteError: Throwable? = null
+
+        override fun findByName(normalizedName: String): Asset? {
+            findByNameError?.let { throw it }
+            return assets.values.firstOrNull { it.normalizedName == normalizedName }
+        }
 
         override fun findById(id: UUID): Asset? = assets[id]
 
@@ -408,10 +523,15 @@ class AssetServiceTest {
                 .drop(offset)
                 .take(limit)
 
-        override fun count(): Long = assets.size.toLong()
+        override fun count(): Long {
+            countError?.let { throw it }
+            return assets.size.toLong()
+        }
 
-        override fun existsByName(normalizedName: String): Boolean =
-            assets.values.any { it.normalizedName == normalizedName }
+        override fun existsByName(normalizedName: String): Boolean {
+            existsByNameError?.let { throw it }
+            return assets.values.any { it.normalizedName == normalizedName }
+        }
 
         override fun insert(asset: Asset) {
             insertException?.let { throw it }
@@ -424,6 +544,7 @@ class AssetServiceTest {
         }
 
         override fun delete(id: UUID) {
+            deleteError?.let { throw it }
             assets.remove(id)
         }
     }

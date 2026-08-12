@@ -148,28 +148,16 @@ class AssetService(
         val authorUuid = player.uniqueId
         val authorName = player.name
 
-        workerExecutor.execute {
-            val result = try {
-                performAdd(id, validName, authorUuid, authorName, dimensions) { output ->
-                    clipboardService.writeTo(clipboard, output)
-                }
-            } catch (e: Exception) {
-                logger.log(
-                    Level.SEVERE,
-                    "Unexpected failure while adding asset '${validName.name}'.",
-                    e,
-                )
-                AddResult.InternalError(e)
+        runOnWorker(operation = "adding asset '${validName.name}'", onMainThread = { outcome ->
+            val result = outcome.getOrElse { t -> AddResult.InternalError(asException(t)) }
+            if (result is AddResult.Success) {
+                index[result.asset.normalizedName] = result.asset
             }
-
-            mainThreadDispatcher(
-                Runnable {
-                    if (result is AddResult.Success) {
-                        index[result.asset.normalizedName] = result.asset
-                    }
-                    callback(result)
-                },
-            )
+            callback(result)
+        }) {
+            performAdd(id, validName, authorUuid, authorName, dimensions) { output ->
+                clipboardService.writeTo(clipboard, output)
+            }
         }
     }
 
@@ -321,11 +309,9 @@ class AssetService(
         val location = player.location
         val world = player.world
 
-        workerExecutor.execute {
-            val loaded = resolveAndLoadClipboard(asset)
-
-            mainThreadDispatcher(
-                Runnable {
+        runOnWorker(operation = "pasting asset '${asset.name}'", onMainThread = { outcome ->
+            outcome.fold(
+                onSuccess = { loaded ->
                     when (loaded) {
                         is ClipboardLoad.Loaded -> {
                             val target = pasteService.pasteTargetOf(location)
@@ -347,7 +333,10 @@ class AssetService(
                         ClipboardLoad.Unavailable -> callback(PasteResult.AssetFileUnavailable(asset))
                     }
                 },
+                onFailure = { t -> callback(PasteResult.InternalError(asException(t))) },
             )
+        }) {
+            resolveAndLoadClipboard(asset)
         }
     }
 
@@ -405,24 +394,20 @@ class AssetService(
             return
         }
 
-        workerExecutor.execute {
-            val result = try {
-                val pageSize = config.list.pageSize
-                val totalCount = repository.count()
-                val totalPages = if (totalCount <= 0L) {
-                    1
-                } else {
-                    ((totalCount + pageSize - 1) / pageSize).toInt()
-                }
-                val clampedPage = page.coerceIn(1, totalPages)
-                val offset = (clampedPage - 1) * pageSize
-                val assets = repository.list(pageSize, offset)
-                ListResult.Success(assets, clampedPage, pageSize, totalCount, totalPages)
-            } catch (e: Exception) {
-                logger.log(Level.SEVERE, "Failed to list assets (requested page $page).", e)
-                ListResult.InternalError(e)
+        runOnWorker(operation = "listing assets (requested page $page)", onMainThread = { outcome ->
+            callback(outcome.getOrElse { t -> ListResult.InternalError(asException(t)) })
+        }) {
+            val pageSize = config.list.pageSize
+            val totalCount = repository.count()
+            val totalPages = if (totalCount <= 0L) {
+                1
+            } else {
+                ((totalCount + pageSize - 1) / pageSize).toInt()
             }
-            mainThreadDispatcher(Runnable { callback(result) })
+            val clampedPage = page.coerceIn(1, totalPages)
+            val offset = (clampedPage - 1) * pageSize
+            val assets = repository.list(pageSize, offset)
+            ListResult.Success(assets, clampedPage, pageSize, totalCount, totalPages)
         }
     }
 
@@ -443,15 +428,11 @@ class AssetService(
         }
 
         val normalizedName = AssetName.normalize(rawName)
-        workerExecutor.execute {
-            val result = try {
-                val asset = repository.findByName(normalizedName)
-                if (asset != null) InfoResult.Success(asset) else InfoResult.NotFound(rawName)
-            } catch (e: Exception) {
-                logger.log(Level.SEVERE, "Failed to load asset info for '$rawName'.", e)
-                InfoResult.InternalError(e)
-            }
-            mainThreadDispatcher(Runnable { callback(result) })
+        runOnWorker(operation = "loading asset info for '$rawName'", onMainThread = { outcome ->
+            callback(outcome.getOrElse { t -> InfoResult.InternalError(asException(t)) })
+        }) {
+            val asset = repository.findByName(normalizedName)
+            if (asset != null) InfoResult.Success(asset) else InfoResult.NotFound(rawName)
         }
     }
 
@@ -507,17 +488,18 @@ class AssetService(
             return
         }
 
-        workerExecutor.execute {
-            val result = performRename(asset, newName, callerUuid)
-            mainThreadDispatcher(
-                Runnable {
-                    if (result is RenameResult.Success) {
-                        index.remove(asset.normalizedName)
-                        index[result.asset.normalizedName] = result.asset
-                    }
-                    callback(result)
-                },
-            )
+        runOnWorker(
+            operation = "renaming asset '${asset.name}' to '${newName.name}'",
+            onMainThread = { outcome ->
+                val result = outcome.getOrElse { t -> RenameResult.InternalError(asException(t)) }
+                if (result is RenameResult.Success) {
+                    index.remove(asset.normalizedName)
+                    index[result.asset.normalizedName] = result.asset
+                }
+                callback(result)
+            },
+        ) {
+            performRename(asset, newName, callerUuid)
         }
     }
 
@@ -593,16 +575,14 @@ class AssetService(
             return
         }
 
-        workerExecutor.execute {
-            val result = performRemove(asset, callerUuid)
-            mainThreadDispatcher(
-                Runnable {
-                    if (result is RemoveResult.Success) {
-                        index.remove(asset.normalizedName)
-                    }
-                    callback(result)
-                },
-            )
+        runOnWorker(operation = "removing asset '${asset.name}'", onMainThread = { outcome ->
+            val result = outcome.getOrElse { t -> RemoveResult.InternalError(asException(t)) }
+            if (result is RemoveResult.Success) {
+                index.remove(asset.normalizedName)
+            }
+            callback(result)
+        }) {
+            performRemove(asset, callerUuid)
         }
     }
 
@@ -688,4 +668,50 @@ class AssetService(
             hasPermission(anyNode)
         }
     }
+
+    // -------------------------------------------------------------------------------------
+    // shared worker-thread guard (SS20, SS30-20/21)
+    // -------------------------------------------------------------------------------------
+
+    /**
+     * Runs [block] on [workerExecutor], guarding it against **any** [Throwable] - not just
+     * [Exception] - so a command always fails gracefully instead of silently killing the worker
+     * thread (SS20, SS30-20/21). This is what the design doc means by a command "failing
+     * gracefully": a player must always get *some* response, even for a [NoSuchMethodError] or
+     * other unexpected `Error` raised deep inside a WorldEdit/FAWE call.
+     *
+     * Whatever [block] returns (or, on failure, whatever [Throwable] was caught) is always handed
+     * to [onMainThread] via [mainThreadDispatcher], exactly once, so the Phase 6 command layer can
+     * safely send chat messages / touch other Bukkit state from it (SS12). Every caught
+     * [Throwable] is logged at [Level.SEVERE] with [operation] for context (SS30-21: never swallow
+     * an exception without logging it) before [onMainThread] is invoked.
+     *
+     * A caught [InterruptedException] additionally restores the thread's interrupt flag, per
+     * standard Java/Kotlin interruption conventions.
+     *
+     * Failures inside [mainThreadDispatcher] itself (e.g. the plugin being disabled) are
+     * deliberately not handled here - that is already [SchemDepotPlugin]'s responsibility.
+     */
+    private fun <T> runOnWorker(
+        operation: String,
+        onMainThread: (Result<T>) -> Unit,
+        block: () -> T,
+    ) {
+        workerExecutor.execute {
+            val outcome: Result<T> = try {
+                Result.success(block())
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                logger.log(Level.SEVERE, "Unexpected interruption while $operation.", e)
+                Result.failure(e)
+            } catch (t: Throwable) {
+                logger.log(Level.SEVERE, "Unexpected failure while $operation.", t)
+                Result.failure(t)
+            }
+            mainThreadDispatcher(Runnable { onMainThread(outcome) })
+        }
+    }
+
+    /** Adapts a caught [Throwable] to the [Exception] the `InternalError` result cases expect. */
+    private fun asException(t: Throwable): Exception = t as? Exception ?: RuntimeException(t)
 }
