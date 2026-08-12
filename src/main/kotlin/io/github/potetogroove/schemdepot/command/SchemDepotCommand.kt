@@ -110,7 +110,7 @@ class SchemDepotCommand(private val assetService: AssetService) {
         val nameArgument = Commands.argument("name", StringArgumentType.word())
             .suggests(suggestionProvider)
 
-        return Commands.literal("schemdepot")
+        return Commands.literal("sd")
             .requires { hasAny(it, Permissions.USE) }
             .executes(::executeHelp)
             .then(Commands.literal("help").executes(::executeHelp))

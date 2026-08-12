@@ -118,7 +118,9 @@ class SchemDepotPlugin : JavaPlugin() {
         val schemDepotCommand = SchemDepotCommand(service)
         schemDepotCommand.primeNameIndex()
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
-            event.registrar().register(schemDepotCommand.buildNode(), "SchemDepot asset registry")
+            val labels = event.registrar()
+                .register(schemDepotCommand.buildNode(), "SchemDepot asset registry")
+            logger.info("Registered command labels: $labels")
         }
 
         logger.info("SchemDepot enabled (data folder: ${dataFolder.absolutePath}).")
