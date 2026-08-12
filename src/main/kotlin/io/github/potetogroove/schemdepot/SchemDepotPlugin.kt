@@ -1,6 +1,7 @@
 package io.github.potetogroove.schemdepot
 
 import io.github.potetogroove.schemdepot.asset.AssetService
+import io.github.potetogroove.schemdepot.command.SchemDepotCommand
 import io.github.potetogroove.schemdepot.config.SchemDepotConfig
 import io.github.potetogroove.schemdepot.storage.Database
 import io.github.potetogroove.schemdepot.storage.DatabaseMigration
@@ -9,6 +10,7 @@ import io.github.potetogroove.schemdepot.storage.SqliteAssetRepository
 import io.github.potetogroove.schemdepot.worldedit.ClipboardService
 import io.github.potetogroove.schemdepot.worldedit.PasteService
 import io.github.potetogroove.schemdepot.worldedit.WorldEditFacade
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 import org.bukkit.plugin.IllegalPluginAccessException
 import org.bukkit.plugin.java.JavaPlugin
 import java.io.File
@@ -26,8 +28,10 @@ import java.util.logging.Level
  * [WorldEditFacade] -> [ClipboardService] / [PasteService] -> [AssetService], then runs the
  * SS19 startup sequence (directory init, schema migration, temp cleanup, index load).
  *
- * Command registration is deliberately **not** part of this class - that is Phase 6's
- * responsibility (design doc SS29 Phase 6).
+ * Command registration ([SchemDepotCommand], Phase 6, design doc SS29 Phase 6) is wired in at the
+ * end of [onEnable], strictly *after* the SS19 startup sequence has succeeded - in particular
+ * after [AssetService.loadIndexBlocking] has returned - so no command can ever run against a
+ * plugin whose asset index has not finished loading.
  */
 class SchemDepotPlugin : JavaPlugin() {
 
@@ -107,6 +111,14 @@ class SchemDepotPlugin : JavaPlugin() {
 
         if (!runStartupStep("load the asset index") { service.loadIndexBlocking() }) {
             return
+        }
+
+        // Only reachable once every SS19 startup step above has succeeded, so the command tree
+        // is never registered against a partially-initialized AssetService (SS20.4).
+        val schemDepotCommand = SchemDepotCommand(service)
+        schemDepotCommand.primeNameIndex()
+        lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
+            event.registrar().register(schemDepotCommand.buildNode(), "SchemDepot asset registry")
         }
 
         logger.info("SchemDepot enabled (data folder: ${dataFolder.absolutePath}).")
