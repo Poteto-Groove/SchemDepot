@@ -29,6 +29,13 @@ dependencies {
     testImplementation(platform(libs.junit.bom))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // AssetServiceTest constructs real ClipboardService/PasteService instances (only their
+    // constructors - no WorldEdit platform method is actually invoked). Those classes have
+    // catch clauses referencing com.sk89q.worldedit.* exception types, so the JVM verifier
+    // needs those types resolvable merely to *load* the class, even though worldedit-bukkit is
+    // compileOnly for the plugin itself (SS4.2: never shaded/bundled). Widening scope to
+    // testRuntimeOnly only affects the test JVM classpath, not the shipped shadowJar.
+    testRuntimeOnly(libs.worldedit.bukkit)
 }
 
 java {
