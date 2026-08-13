@@ -12,7 +12,6 @@ import org.bukkit.World
 import org.bukkit.entity.Player
 import java.io.BufferedInputStream
 import java.io.IOException
-import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.logging.Level
@@ -129,29 +128,6 @@ class PasteService(
     private fun readClipboard(
         reader: com.sk89q.worldedit.extent.clipboard.io.ClipboardReader,
     ): LoadResult = reader.use { LoadResult.Success(it.read()) }
-
-    /**
-     * Stream-accepting variant of [loadClipboard] for callers that already hold an open stream.
-     *
-     * Format detection is not possible without a path or a re-readable source, so the caller must
-     * name the [format] explicitly. The reader (and therefore [input]) is closed via `use`.
-     *
-     * **Worker thread**, same reasoning as [loadClipboard].
-     */
-    fun loadClipboard(
-        input: InputStream,
-        format: com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat,
-    ): LoadResult {
-        return try {
-            readClipboard(format.getReader(BufferedInputStream(input)))
-        } catch (e: IOException) {
-            logger.log(Level.WARNING, "Failed to read schematic from stream.", e)
-            LoadResult.Failed(e)
-        } catch (e: RuntimeException) {
-            logger.log(Level.WARNING, "Corrupt or unreadable schematic stream.", e)
-            LoadResult.Failed(e)
-        }
-    }
 
     /**
      * Converts a Bukkit [location] into the [BlockVector3] paste target WorldEdit expects.

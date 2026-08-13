@@ -3,6 +3,7 @@ package io.github.potetogroove.schemdepot.storage
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -208,5 +209,71 @@ class SchematicStorageTest {
 
         assertEquals(0, result.deletedCount)
         assertTrue(result.failedPaths.isEmpty())
+    }
+
+    // -------------------------------------------------------------------------------------
+    // cleanupTrashDirectory (SS13.4 step 6 - orphaned trash files left by an interrupted remove)
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `cleanupTrashDirectory removes leftover trashed schem files on startup and reports the count`() {
+        storage.initializeDirectories()
+        val leftoverA = storage.trashDirectory.resolve("${UUID.randomUUID()}.schem")
+        val leftoverB = storage.trashDirectory.resolve("${UUID.randomUUID()}.schem")
+        Files.write(leftoverA, "abandoned".toByteArray())
+        Files.write(leftoverB, "abandoned".toByteArray())
+        val unrelatedFile = storage.trashDirectory.resolve("keep-me.txt")
+        Files.write(unrelatedFile, "keep".toByteArray())
+
+        val result = storage.cleanupTrashDirectory()
+
+        assertEquals(2, result.deletedCount)
+        assertTrue(result.failedPaths.isEmpty())
+        assertFalse(Files.exists(leftoverA))
+        assertFalse(Files.exists(leftoverB))
+        assertTrue(Files.exists(unrelatedFile), "cleanup must not touch unrelated files")
+    }
+
+    @Test
+    fun `cleanupTrashDirectory is a no-op when the trash directory does not exist yet`() {
+        // Deliberately do NOT call initializeDirectories().
+        val result = storage.cleanupTrashDirectory()
+
+        assertEquals(0, result.deletedCount)
+        assertTrue(result.failedPaths.isEmpty())
+    }
+
+    // -------------------------------------------------------------------------------------
+    // toRealPath() containment (SS21-10) - a symlink planted inside schematics/ must not defeat
+    // the path-containment check. Creating a symbolic link requires elevated privileges/Developer
+    // Mode on Windows, so this test skips itself (rather than failing) wherever that is not
+    // available, per the task instructions.
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `resolveForReadPath rejects a symlink inside the schematics directory that escapes it`() {
+        storage.initializeDirectories()
+
+        val outsideDirectory = Files.createTempDirectory("schemdepot-outside")
+        Files.write(outsideDirectory.resolve("secret.schem"), "top secret".toByteArray())
+
+        val linkPath = storage.schematicsDirectory.resolve("escape-link")
+        try {
+            Files.createSymbolicLink(linkPath, outsideDirectory)
+        } catch (e: IOException) {
+            Assumptions.assumeTrue(
+                false,
+                "skipping: cannot create symbolic links in this environment (likely missing " +
+                    "admin privileges / Developer Mode on Windows): ${e.message}",
+            )
+            return
+        } catch (e: UnsupportedOperationException) {
+            Assumptions.assumeTrue(false, "skipping: this filesystem does not support symbolic links: ${e.message}")
+            return
+        }
+
+        val result = storage.resolveForReadPath(linkPath.resolve("secret.schem"))
+
+        assertTrue(result is SchematicStorage.ReadResolution.Rejected, "expected Rejected but was $result")
     }
 }

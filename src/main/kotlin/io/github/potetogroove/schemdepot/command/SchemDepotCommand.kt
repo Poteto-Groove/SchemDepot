@@ -6,7 +6,6 @@ import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.context.CommandContext
 import com.mojang.brigadier.tree.LiteralCommandNode
 import io.github.potetogroove.schemdepot.asset.AddResult
-import io.github.potetogroove.schemdepot.asset.AssetName
 import io.github.potetogroove.schemdepot.asset.AssetService
 import io.github.potetogroove.schemdepot.asset.InfoResult
 import io.github.potetogroove.schemdepot.asset.ListResult
@@ -20,11 +19,9 @@ import io.papermc.paper.command.brigadier.Commands
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import java.util.UUID
-import java.util.logging.Level
-import java.util.logging.Logger
 
 /**
- * Builds and executes the `/sd` (`/schemdepot`) Brigadier command tree
+ * Builds and executes the `/schemdepot` (alias `/sd`) Brigadier command tree
  * (docs/SchemDepot_DESIGN.md SS6 "Command tree", SS7 "Permissions", SS18 "Tab Completion",
  * SS29 Phase 6).
  *
@@ -67,50 +64,23 @@ import java.util.logging.Logger
  */
 class SchemDepotCommand(private val assetService: AssetService) {
 
-    private val logger: Logger = Logger.getLogger(SchemDepotCommand::class.java.name)
-    private val nameIndex = AssetNameIndex()
-    private val suggestionProvider = AssetNameSuggestions.forIndex(nameIndex)
+    private val suggestionProvider = AssetNameSuggestions.forService(assetService)
 
     /**
-     * Performs the one-time bulk load of [nameIndex] from [AssetService.list] (SS18). Must be
-     * called once, after [AssetService]'s own startup index has finished loading (i.e. after
-     * [AssetService.loadIndexBlocking] has already returned) - see `SchemDepotPlugin.onEnable`.
-     * Safe to call from the main thread: [AssetService.list] dispatches its SQLite/lookup work to
-     * its own worker executor and only invokes [nameIndex] mutations back on the main thread.
+     * Builds the full `/schemdepot` command tree described in the class KDoc (SS6.1).
+     *
+     * The returned node's literal is the **primary root** `schemdepot` (SS3.2/SS26). The `/sd`
+     * alias is attached at registration time by `SchemDepotPlugin.onEnable`, not here.
      */
-    fun primeNameIndex() {
-        loadIndexPage(1)
-    }
-
-    private fun loadIndexPage(page: Int) {
-        assetService.list(page, { true }) { result ->
-            when (result) {
-                is ListResult.Success -> {
-                    if (page == 1) {
-                        nameIndex.replaceAll(result.assets)
-                    } else {
-                        result.assets.forEach(nameIndex::put)
-                    }
-                    if (page < result.totalPages) {
-                        loadIndexPage(page + 1)
-                    }
-                }
-                ListResult.NoPermission -> {
-                    // Unreachable: primeNameIndex() always passes { true } as hasPermission.
-                }
-                is ListResult.InternalError -> {
-                    logger.log(Level.SEVERE, "Failed to prime the asset-name suggestion index.", result.cause)
-                }
-            }
-        }
-    }
-
-    /** Builds the full `/sd` command tree described in the class KDoc (SS6.1). */
     fun buildNode(): LiteralCommandNode<CommandSourceStack> {
         val nameArgument = Commands.argument("name", StringArgumentType.word())
             .suggests(suggestionProvider)
 
-        return Commands.literal("sd")
+        // SS3.2/SS26: the primary root literal is `/schemdepot`; `/sd` is registered as an *alias*
+        // by SchemDepotPlugin (Commands.register(node, description, aliases)), never as the root
+        // literal itself. Building the node as literal("sd") makes Paper register only `/sd` and
+        // leaves `/schemdepot` undefined, which contradicts the descriptor requirement in SS26.
+        return Commands.literal("schemdepot")
             .requires { hasAny(it, Permissions.USE) }
             .executes(::executeHelp)
             .then(Commands.literal("help").executes(::executeHelp))
@@ -205,10 +175,7 @@ class SchemDepotCommand(private val assetService: AssetService) {
         val rawName = StringArgumentType.getString(context, "name")
         assetService.add(player, rawName) { result ->
             when (result) {
-                is AddResult.Success -> {
-                    nameIndex.put(result.asset)
-                    player.sendMessage(Messages.added(result.asset))
-                }
+                is AddResult.Success -> player.sendMessage(Messages.added(result.asset))
                 AddResult.NoPermission -> player.sendMessage(Messages.noPermissionAdd())
                 is AddResult.InvalidName -> player.sendMessage(Messages.invalidName(result.name))
                 is AddResult.ReservedName -> player.sendMessage(Messages.reservedName(result.name))
@@ -268,14 +235,14 @@ class SchemDepotCommand(private val assetService: AssetService) {
         val callerUuid = callerUuidOf(sender)
         val oldRawName = StringArgumentType.getString(context, "name")
         val newRawName = StringArgumentType.getString(context, "new-name")
-        val oldDisplayName = nameIndex.get(AssetName.normalize(oldRawName)) ?: oldRawName
         assetService.rename(callerUuid, oldRawName, newRawName, sender::hasPermission) { result ->
             when (result) {
-                is RenameResult.Success -> {
-                    nameIndex.remove(AssetName.normalize(oldRawName))
-                    nameIndex.put(result.asset)
-                    sender.sendMessage(Messages.renamed(oldDisplayName, result.asset.name))
-                }
+                // oldRawName (not a canonical display name) is intentional here: the command
+                // layer no longer keeps its own name cache (see AssetService.suggestNames), and
+                // AssetService.rename's success path only hands back the *new* Asset - not
+                // whatever display-case the pre-rename asset had. Players overwhelmingly type the
+                // existing name back verbatim, so this loses nothing in practice.
+                is RenameResult.Success -> sender.sendMessage(Messages.renamed(oldRawName, result.asset.name))
                 RenameResult.NoPermission -> sender.sendMessage(Messages.noPermissionRename())
                 is RenameResult.NotFound -> sender.sendMessage(Messages.notFound(result.name))
                 is RenameResult.InvalidName -> sender.sendMessage(Messages.invalidName(result.name))
@@ -293,10 +260,7 @@ class SchemDepotCommand(private val assetService: AssetService) {
         val rawName = StringArgumentType.getString(context, "name")
         assetService.remove(callerUuid, rawName, sender::hasPermission) { result ->
             when (result) {
-                is RemoveResult.Success -> {
-                    nameIndex.remove(result.asset.normalizedName)
-                    sender.sendMessage(Messages.removed(result.asset))
-                }
+                is RemoveResult.Success -> sender.sendMessage(Messages.removed(result.asset))
                 RemoveResult.NoPermission -> sender.sendMessage(Messages.noPermissionRemove())
                 is RemoveResult.NotFound -> sender.sendMessage(Messages.notFound(result.name))
                 is RemoveResult.InternalError -> sender.sendMessage(Messages.internalError())

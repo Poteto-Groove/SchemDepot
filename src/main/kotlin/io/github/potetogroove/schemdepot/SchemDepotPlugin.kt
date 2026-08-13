@@ -109,6 +109,17 @@ class SchemDepotPlugin : JavaPlugin() {
         // Individual per-file cleanup failures are already logged as WARNING by
         // SchematicStorage.cleanupTempDirectory itself and are not fatal to startup (SS20).
 
+        // Same treatment for trash/: a remove whose final deleteFromTrash failed (SS13.4 step 6)
+        // leaves a `<uuid>.schem` behind that nothing references any more, so it would otherwise
+        // accumulate forever. Non-fatal, exactly like the tmp/ sweep above.
+        val trashCleanupResult = schematicStorage.cleanupTrashDirectory()
+        if (trashCleanupResult.deletedCount > 0) {
+            logger.info(
+                "Cleaned up ${trashCleanupResult.deletedCount} leftover trashed schematic file(s) " +
+                    "from a previous run.",
+            )
+        }
+
         if (!runStartupStep("load the asset index") { service.loadIndexBlocking() }) {
             return
         }
@@ -116,11 +127,32 @@ class SchemDepotPlugin : JavaPlugin() {
         // Only reachable once every SS19 startup step above has succeeded, so the command tree
         // is never registered against a partially-initialized AssetService (SS20.4).
         val schemDepotCommand = SchemDepotCommand(service)
-        schemDepotCommand.primeNameIndex()
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
-            val labels = event.registrar()
-                .register(schemDepotCommand.buildNode(), "SchemDepot asset registry")
+            // SS3.2/SS26: primary root `/schemdepot`, primary alias `/sd`. The three-argument
+            // overload is what attaches the alias; the two-argument one registers the node's own
+            // literal only, which previously left `/sd` (or, after fixing the literal,
+            // `/schemdepot`) undefined. Verified signature:
+            // io.papermc.paper.command.brigadier.Commands#register(
+            //   com.mojang.brigadier.tree.LiteralCommandNode<CommandSourceStack>,
+            //   java.lang.String, java.util.Collection<java.lang.String>): java.util.Set<String>
+            // (javap, paper-api 26.1.2.build.74-stable).
+            val labels = event.registrar().register(
+                schemDepotCommand.buildNode(),
+                "SchemDepot asset registry",
+                listOf(COMMAND_ALIAS),
+            )
+            // Kept deliberately: this is the regression detector for the "/sd is an unknown
+            // command" class of bug. Both `schemdepot` and `sd` must appear here.
             logger.info("Registered command labels: $labels")
+            val missing = EXPECTED_COMMAND_LABELS.filterNot { expected ->
+                labels.any { it.equals(expected, ignoreCase = true) || it.endsWith(":$expected") }
+            }
+            if (missing.isNotEmpty()) {
+                logger.warning(
+                    "SchemDepot expected to register the command label(s) $missing but the " +
+                        "registrar did not report them; some commands may be unavailable.",
+                )
+            }
         }
 
         logger.info("SchemDepot enabled (data folder: ${dataFolder.absolutePath}).")
@@ -135,8 +167,16 @@ class SchemDepotPlugin : JavaPlugin() {
 
     /**
      * Runs a single blocking startup step. On failure, logs a SEVERE message with [description]
-     * and the causing exception, then disables the plugin so it never runs in a partially
+     * and the causing [Throwable], then disables the plugin so it never runs in a partially
      * initialized state (SS20.4: "do not run in a partially initialized state").
+     *
+     * Catches [Throwable] rather than [Exception] on purpose: a missing or incompatible FAWE /
+     * WorldEdit runtime surfaces as [NoClassDefFoundError] / [NoSuchMethodError], which are
+     * [Error]s, not [Exception]s (SS20.5). Letting those escape would abort `onEnable` midway and
+     * leave the plugin "enabled" with a half-built object graph - exactly the state SS20.4
+     * forbids. This also makes the startup path symmetric with
+     * [io.github.potetogroove.schemdepot.asset.AssetService]'s worker guard, which already catches
+     * [Throwable].
      *
      * @return `true` if [block] completed without throwing, `false` if the plugin was disabled.
      */
@@ -144,11 +184,11 @@ class SchemDepotPlugin : JavaPlugin() {
         return try {
             block()
             true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             logger.log(
                 Level.SEVERE,
                 "SchemDepot failed to $description during startup; disabling the plugin.",
-                e,
+                t,
             )
             server.pluginManager.disablePlugin(this)
             false
@@ -204,5 +244,16 @@ class SchemDepotPlugin : JavaPlugin() {
             thread.isDaemon = false
             return thread
         }
+    }
+
+    private companion object {
+        /** Primary root literal built by [SchemDepotCommand.buildNode] (SS3.2/SS26). */
+        const val COMMAND_ROOT = "schemdepot"
+
+        /** Primary alias (SS3.2/SS26); the builder-facing interface in practice. */
+        const val COMMAND_ALIAS = "sd"
+
+        /** Both labels must show up in the registrar's result; see the startup log check. */
+        val EXPECTED_COMMAND_LABELS = listOf(COMMAND_ROOT, COMMAND_ALIAS)
     }
 }

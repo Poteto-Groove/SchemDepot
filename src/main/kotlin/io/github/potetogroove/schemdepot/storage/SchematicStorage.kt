@@ -5,6 +5,9 @@ import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+// Explicit: `NoSuchFileException` would otherwise resolve to kotlin.io's same-named class, which
+// java.nio.file.Files.toRealPath never throws.
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -28,9 +31,10 @@ import java.util.logging.Logger
  * ## Path safety (SS21-1, SS21-10, SS30-5, SS30-18)
  * Every on-disk file name is derived exclusively from an asset [UUID] (`<uuid>.schem`). A
  * human-supplied asset display name is never used to build a filesystem path. Read access is
- * additionally re-validated (normalized path containment check) against the schematics directory
- * root before a caller is allowed to open the resolved path, as defense-in-depth against path
- * traversal.
+ * additionally re-validated against the schematics directory root before a caller is allowed to
+ * open the resolved path, as defense-in-depth against path traversal: first lexically
+ * (`toAbsolutePath().normalize()`), then at the filesystem-entity level (`toRealPath()`), so a
+ * symlink or junction planted inside `schematics/` cannot be used to read a file outside it.
  *
  * ## Logging (SS21-8)
  * Some log messages produced by this class include absolute server filesystem paths for
@@ -140,7 +144,12 @@ class SchematicStorage(
         try {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
         } catch (e: AtomicMoveNotSupportedException) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+            // No REPLACE_EXISTING here, deliberately (SS13.2 "never overwrite another asset's
+            // file", SS30-15). Passing it made this fallback silently clobber an existing
+            // schematic and also made the FileAlreadyExistsException catch in `write` dead code.
+            // Without any option, Files.move throws FileAlreadyExistsException when the target
+            // exists, which `write` maps to WriteResult.AlreadyExists.
+            Files.move(source, target)
         }
     }
 
@@ -177,12 +186,48 @@ class SchematicStorage(
      * (SS21-1/SS30-5).
      */
     internal fun resolveForReadPath(path: Path): ReadResolution {
+        // Step 1 - lexical containment. Catches `..` traversal in paths that do not exist on disk
+        // at all (which step 2 could not even resolve) and keeps such attempts classified as
+        // Rejected rather than NotFound.
         val normalized = path.toAbsolutePath().normalize()
         if (!normalized.startsWith(schematicsDirectory)) {
             return ReadResolution.Rejected
         }
-        return if (Files.isRegularFile(normalized)) {
-            ReadResolution.Found(normalized)
+
+        // Step 2 - real containment (SS21-10). toAbsolutePath().normalize() is purely lexical and
+        // happily walks *through* a symlink: `schematics/<uuid>.schem` may be a link pointing at
+        // world/level.dat and still pass step 1. toRealPath() resolves every link (and, on
+        // Windows, junctions and 8.3 short names) so containment is checked against the actual
+        // file the read would open. The root is resolved the same way so the two sides are
+        // comparable.
+        val realRoot = try {
+            schematicsDirectory.toRealPath()
+        } catch (e: IOException) {
+            // The schematics directory itself is unreadable/absent - nothing can resolve inside
+            // it, which is the caller's NotFound case (AC-11), not a containment violation.
+            logger.log(
+                Level.WARNING,
+                "Could not resolve the schematics directory: $schematicsDirectory",
+                e,
+            )
+            return ReadResolution.NotFound
+        }
+
+        val real = try {
+            normalized.toRealPath()
+        } catch (e: NoSuchFileException) {
+            return ReadResolution.NotFound
+        } catch (e: IOException) {
+            logger.log(Level.WARNING, "Could not resolve the schematic path: $normalized", e)
+            return ReadResolution.NotFound
+        }
+
+        if (!real.startsWith(realRoot)) {
+            return ReadResolution.Rejected
+        }
+
+        return if (Files.isRegularFile(real)) {
+            ReadResolution.Found(real)
         } else {
             ReadResolution.NotFound
         }
@@ -270,7 +315,7 @@ class SchematicStorage(
     // Startup cleanup
     // ---------------------------------------------------------------------
 
-    /** Result of [cleanupTempDirectory]. */
+    /** Result of [cleanupTempDirectory] and [cleanupTrashDirectory]. */
     data class TempCleanupResult(val deletedCount: Int, val failedPaths: List<Path>)
 
     /**
@@ -278,21 +323,48 @@ class SchematicStorage(
      * interrupted by a crash. Intended to be called once during plugin startup, before any
      * command handling begins.
      */
-    fun cleanupTempDirectory(): TempCleanupResult {
-        if (!Files.isDirectory(tempDirectory)) {
+    fun cleanupTempDirectory(): TempCleanupResult =
+        cleanupDirectory(tempDirectory, "*.tmp", "leftover temp file")
+
+    /**
+     * Deletes any leftover `*.schem` files in [trashDirectory].
+     *
+     * `trash/` is only ever a staging area: [moveToTrash] puts a file there and the caller is
+     * expected to follow up with [deleteFromTrash] once the registry row is gone (SS13.4 steps
+     * 3-5). Anything still present at startup is therefore the residue of a removal whose final
+     * delete failed or was interrupted, referenced by no registry row - without this sweep it
+     * would accumulate indefinitely (SS13.4 step 6 "orphan/trash cleanup").
+     *
+     * Intended to be called once during plugin startup, alongside [cleanupTempDirectory], and
+     * treated as non-fatal in exactly the same way.
+     */
+    fun cleanupTrashDirectory(): TempCleanupResult =
+        cleanupDirectory(trashDirectory, "*.schem", "leftover trashed schematic file")
+
+    /**
+     * Shared implementation of the startup sweeps. Only files matching [glob] are considered, so a
+     * sweep never touches a file it did not create; per-file failures are logged (server log only:
+     * the message contains an absolute path, SS21-8) and collected instead of aborting the sweep.
+     */
+    private fun cleanupDirectory(
+        directory: Path,
+        glob: String,
+        description: String,
+    ): TempCleanupResult {
+        if (!Files.isDirectory(directory)) {
             return TempCleanupResult(0, emptyList())
         }
 
         var deletedCount = 0
         val failedPaths = mutableListOf<Path>()
 
-        Files.newDirectoryStream(tempDirectory, "*.tmp").use { stream ->
+        Files.newDirectoryStream(directory, glob).use { stream ->
             for (path in stream) {
                 try {
                     Files.delete(path)
                     deletedCount++
                 } catch (e: IOException) {
-                    logger.log(Level.WARNING, "Failed to clean up leftover temp file: $path", e)
+                    logger.log(Level.WARNING, "Failed to clean up $description: $path", e)
                     failedPaths.add(path)
                 }
             }

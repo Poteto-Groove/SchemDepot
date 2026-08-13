@@ -167,4 +167,47 @@ class SqliteAssetRepositoryTest {
         assertNull(repository.findById(asset.id))
         assertEquals(0L, repository.count())
     }
+
+    // -------------------------------------------------------------------------------------
+    // updateName/delete return the number of affected rows (ghost-index prevention)
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `updateName returns 1 when the row exists`() {
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree")
+        repository.insert(asset)
+
+        val updatedRows = repository.updateName(asset.id, "LargeOak", "largeoak", asset.updatedAt.plusSeconds(1))
+
+        assertEquals(1, updatedRows)
+    }
+
+    @Test
+    fun `updateName returns 0 for an id that does not exist`() {
+        val updatedRows = repository.updateName(
+            UUID.randomUUID(),
+            "LargeOak",
+            "largeoak",
+            Instant.now().truncatedTo(ChronoUnit.MILLIS),
+        )
+
+        assertEquals(0, updatedRows)
+    }
+
+    @Test
+    fun `delete returns 1 when the row exists`() {
+        val asset = sampleAsset()
+        repository.insert(asset)
+
+        val deletedRows = repository.delete(asset.id)
+
+        assertEquals(1, deletedRows)
+    }
+
+    @Test
+    fun `delete returns 0 for an id that does not exist`() {
+        val deletedRows = repository.delete(UUID.randomUUID())
+
+        assertEquals(0, deletedRows)
+    }
 }

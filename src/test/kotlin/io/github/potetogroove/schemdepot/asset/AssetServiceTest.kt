@@ -177,6 +177,134 @@ class AssetServiceTest {
     }
 
     // -------------------------------------------------------------------------------------
+    // SS20.1 - two simultaneous adds of the same name: the loser gets a duplicate-name error
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `an insert that loses a concurrent race for the same name is reported as DuplicateName`() {
+        // Models exactly what happens with two worker threads: this call's existsByName pre-check
+        // runs *before* the other player's insert commits (so it sees nothing), and the commit
+        // lands in between, making this insert fail on the UNIQUE(normalized_name) constraint.
+        val winner = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorName = "Bob")
+        fakeRepository.insertHandler = { _ ->
+            fakeRepository.assets[winner.id] = winner
+            throw SQLException("[SQLITE_CONSTRAINT_UNIQUE] UNIQUE constraint failed: assets.normalized_name")
+        }
+
+        val validName = AssetName.validate("OakTree") as AssetNameResult.Valid
+        val result = service.performAdd(
+            UUID.randomUUID(),
+            validName,
+            UUID.randomUUID(),
+            "Alice",
+            ClipboardService.ClipboardDimensions(2, 2, 2),
+        ) { output -> output.write("data".toByteArray()) }
+
+        assertTrue(result is AddResult.DuplicateName, "expected DuplicateName but was $result")
+        assertEquals("OakTree", (result as AddResult.DuplicateName).name)
+
+        // AC-03 still holds on this path: the loser's schematic must not survive anywhere.
+        assertTrue(
+            filesIn(schematicStorage.schematicsDirectory).isEmpty(),
+            "the loser's schematic must be removed from schematics/",
+        )
+        assertTrue(
+            filesIn(schematicStorage.trashDirectory).isEmpty(),
+            "the loser's schematic must be permanently deleted from trash/, not left behind",
+        )
+        assertTrue(
+            filesIn(schematicStorage.tempDirectory).isEmpty(),
+            "no temp file may be left behind",
+        )
+        assertEquals(1L, fakeRepository.count(), "only the winning registration may remain")
+    }
+
+    @Test
+    fun `an insert failure with no competing registration is still an InternalError`() {
+        // Guards the new duplicate-name branch against swallowing genuine database failures.
+        fakeRepository.insertException = SQLException("disk I/O error")
+        val validName = AssetName.validate("OakTree") as AssetNameResult.Valid
+
+        val result = service.performAdd(
+            UUID.randomUUID(),
+            validName,
+            UUID.randomUUID(),
+            "Alice",
+            ClipboardService.ClipboardDimensions(2, 2, 2),
+        ) { output -> output.write("data".toByteArray()) }
+
+        assertTrue(result is AddResult.InternalError, "expected InternalError but was $result")
+    }
+
+    // -------------------------------------------------------------------------------------
+    // 0-row UPDATE/DELETE must not be reported as success (registry is the source of truth)
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `performRename maps a zero-row update to NotFound instead of Success`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        // The row disappears from the database behind the service's back.
+        fakeRepository.assets.remove(asset.id)
+
+        val newName = AssetName.validate("LargeOak") as AssetNameResult.Valid
+        val result = service.performRename(asset, newName, ownerUuid)
+
+        assertTrue(result is RenameResult.NotFound, "expected NotFound but was $result")
+    }
+
+    @Test
+    fun `rename of a row that vanished does not publish a ghost entry into the index`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.updateNameRowsOverride = 0
+
+        var result: RenameResult? = null
+        service.rename(ownerUuid, "OakTree", "LargeOak", { true }) { result = it }
+        assertTrue(result is RenameResult.NotFound, "expected NotFound but was $result")
+
+        // The new name must never have entered the index: looking it up has to miss.
+        var lookupNewName: RenameResult? = null
+        service.rename(ownerUuid, "LargeOak", "Whatever", { true }) { lookupNewName = it }
+        assertTrue(
+            lookupNewName is RenameResult.NotFound,
+            "the new name must not exist in the index but was $lookupNewName",
+        )
+    }
+
+    @Test
+    fun `performRemove maps a zero-row delete to NotFound instead of Success`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        // The row disappears from the database behind the service's back.
+        fakeRepository.assets.remove(asset.id)
+
+        val result = service.performRemove(asset, ownerUuid)
+
+        assertTrue(result is RemoveResult.NotFound, "expected NotFound but was $result")
+    }
+
+    @Test
+    fun `remove of a row that vanished reports NotFound to the caller`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        fakeRepository.deleteRowsOverride = 0
+
+        var result: RemoveResult? = null
+        service.remove(ownerUuid, "OakTree", { true }) { result = it }
+
+        assertTrue(result is RemoveResult.NotFound, "expected NotFound but was $result")
+    }
+
+    // -------------------------------------------------------------------------------------
     // AC-09 - rename never changes schematic_file / the backing file
     // -------------------------------------------------------------------------------------
 
@@ -491,12 +619,72 @@ class AssetServiceTest {
         assertTrue(result is RemoveResult.InternalError, "expected InternalError but was $result")
     }
 
+    // -------------------------------------------------------------------------------------
+    // suggestNames (SS18 tab completion, task 1 index consolidation)
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `suggestNames returns display names matching a prefix regardless of case`() {
+        val alice = UUID.randomUUID()
+        fakeRepository.assets[UUID.randomUUID()] = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = alice)
+        fakeRepository.assets[UUID.randomUUID()] = sampleAsset(name = "OakStump", normalizedName = "oakstump", authorUuid = alice)
+        fakeRepository.assets[UUID.randomUUID()] = sampleAsset(name = "BirchTree", normalizedName = "birchtree", authorUuid = alice)
+        service.loadIndexBlocking()
+
+        assertEquals(listOf("OakStump", "OakTree"), service.suggestNames("Oak"))
+        assertEquals(listOf("OakStump", "OakTree"), service.suggestNames("oak"))
+        assertEquals(listOf("OakStump", "OakTree"), service.suggestNames("OAK"))
+        assertEquals(emptyList<String>(), service.suggestNames("pine"))
+    }
+
+    @Test
+    fun `suggestNames reflects a rename by dropping the old name and offering the new one`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+
+        var result: RenameResult? = null
+        service.rename(ownerUuid, "OakTree", "LargeOak", { true }) { result = it }
+        assertTrue(result is RenameResult.Success, "expected Success but was $result")
+
+        assertEquals(emptyList<String>(), service.suggestNames("OakTree"))
+        assertEquals(listOf("LargeOak"), service.suggestNames("Large"))
+    }
+
+    @Test
+    fun `suggestNames no longer offers a name after it is removed`() {
+        val ownerUuid = UUID.randomUUID()
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree", authorUuid = ownerUuid)
+        fakeRepository.assets[asset.id] = asset
+        service.loadIndexBlocking()
+        assertEquals(listOf("OakTree"), service.suggestNames("Oak"))
+
+        var result: RemoveResult? = null
+        service.remove(ownerUuid, "OakTree", { true }) { result = it }
+        assertTrue(result is RemoveResult.Success, "expected Success but was $result")
+
+        assertEquals(emptyList<String>(), service.suggestNames("Oak"))
+    }
+
     /** In-memory fake [AssetRepository] for unit testing [AssetService] without SQLite. */
     private class FakeAssetRepository : AssetRepository {
         val assets: MutableMap<UUID, Asset> = linkedMapOf()
 
         /** When set, [insert] throws this instead of storing the asset (simulates a DB failure). */
         var insertException: Exception? = null
+
+        /**
+         * When set, [insert] delegates to this instead of storing the asset. Lets a test model a
+         * concurrent writer that commits the same name and then makes *this* insert fail.
+         */
+        var insertHandler: ((Asset) -> Unit)? = null
+
+        /** Number of rows the next [updateName] call reports as updated; `null` = real behaviour. */
+        var updateNameRowsOverride: Int? = null
+
+        /** Number of rows the next [delete] call reports as deleted; `null` = real behaviour. */
+        var deleteRowsOverride: Int? = null
 
         /** When set, [count] throws this instead of returning normally (simulates any Throwable). */
         var countError: Throwable? = null
@@ -535,17 +723,29 @@ class AssetServiceTest {
 
         override fun insert(asset: Asset) {
             insertException?.let { throw it }
+            insertHandler?.let { handler ->
+                handler(asset)
+                return
+            }
             assets[asset.id] = asset
         }
 
-        override fun updateName(id: UUID, name: String, normalizedName: String, updatedAt: Instant) {
-            val existing = assets[id] ?: return
+        override fun updateName(
+            id: UUID,
+            name: String,
+            normalizedName: String,
+            updatedAt: Instant,
+        ): Int {
+            updateNameRowsOverride?.let { return it }
+            val existing = assets[id] ?: return 0
             assets[id] = existing.copy(name = name, normalizedName = normalizedName, updatedAt = updatedAt)
+            return 1
         }
 
-        override fun delete(id: UUID) {
+        override fun delete(id: UUID): Int {
             deleteError?.let { throw it }
-            assets.remove(id)
+            deleteRowsOverride?.let { return it }
+            return if (assets.remove(id) != null) 1 else 0
         }
     }
 }

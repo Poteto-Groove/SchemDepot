@@ -19,6 +19,23 @@ interface AssetRepository {
     fun existsByName(normalizedName: String): Boolean
 
     fun insert(asset: Asset)
-    fun updateName(id: UUID, name: String, normalizedName: String, updatedAt: Instant)
-    fun delete(id: UUID)
+
+    /**
+     * Updates the display/normalized name of the row identified by [id].
+     *
+     * @return the number of rows actually updated: `1` on success, `0` when no row with [id]
+     *   exists (any other value would mean the primary key is not unique). Callers MUST check
+     *   this: silently treating a 0-row update as success lets an entry that no longer exists in
+     *   the database - the single source of truth (SS19/SS36 invariant 4) - survive in the
+     *   in-memory index as a ghost until the next restart.
+     */
+    fun updateName(id: UUID, name: String, normalizedName: String, updatedAt: Instant): Int
+
+    /**
+     * Deletes the row identified by [id].
+     *
+     * @return the number of rows actually deleted: `1` on success, `0` when no row with [id]
+     *   exists. Callers MUST check this, for the same reason as [updateName].
+     */
+    fun delete(id: UUID): Int
 }

@@ -120,9 +120,9 @@ class SqliteAssetRepository(private val database: Database) : AssetRepository {
         }
     }
 
-    override fun updateName(id: UUID, name: String, normalizedName: String, updatedAt: Instant) {
+    override fun updateName(id: UUID, name: String, normalizedName: String, updatedAt: Instant): Int {
         database.openConnection().use { connection ->
-            withTransaction(connection) {
+            return withTransaction(connection) {
                 connection.prepareStatement(
                     "UPDATE assets SET name = ?, normalized_name = ?, updated_at = ? WHERE id = ?",
                 ).use { statement ->
@@ -130,17 +130,20 @@ class SqliteAssetRepository(private val database: Database) : AssetRepository {
                     statement.setString(2, normalizedName)
                     statement.setLong(3, updatedAt.toEpochMilli())
                     statement.setString(4, id.toString())
+                    // Propagated to the caller: `UPDATE ... WHERE id = ?` against a row that no
+                    // longer exists is not an error at the SQL level, it just affects 0 rows.
                     statement.executeUpdate()
                 }
             }
         }
     }
 
-    override fun delete(id: UUID) {
+    override fun delete(id: UUID): Int {
         database.openConnection().use { connection ->
-            withTransaction(connection) {
+            return withTransaction(connection) {
                 connection.prepareStatement("DELETE FROM assets WHERE id = ?").use { statement ->
                     statement.setString(1, id.toString())
+                    // Same as updateName: 0 means "there was nothing to delete", not "failed".
                     statement.executeUpdate()
                 }
             }
@@ -150,14 +153,15 @@ class SqliteAssetRepository(private val database: Database) : AssetRepository {
     /**
      * Runs [block] inside an explicit SQLite transaction: disables autocommit, commits on
      * success, rolls back on failure, and always restores the connection's original autocommit
-     * state.
+     * state. Returns whatever [block] returned.
      */
-    private fun withTransaction(connection: Connection, block: () -> Unit) {
+    private fun <T> withTransaction(connection: Connection, block: () -> T): T {
         val previousAutoCommit = connection.autoCommit
         connection.autoCommit = false
         try {
-            block()
+            val result = block()
             connection.commit()
+            return result
         } catch (exception: Exception) {
             connection.rollback()
             throw exception

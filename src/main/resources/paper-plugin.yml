@@ -13,3 +13,107 @@ dependencies:
       # com.sk89q.worldedit.* classes from FAWE at runtime, so FAWE's classpath
       # must be joined. Setting this to false causes NoClassDefFoundError.
       join-classpath: true
+
+# Design doc SS7 / SS26 ("the descriptor must define ... permissions"). Declaring the nodes here is
+# what makes them real: without this block `schemdepot.admin` is dead config that grants nothing,
+# and every node's effective default is Bukkit's implicit OP.
+#
+# Schema note: paper-plugin.yml's `permissions:` block uses exactly the same shape as plugin.yml's.
+# Paper deserializes it via PermissionConfigurationSerializer, which reads the top-level
+# `permissions` node as a Map<String, Map<?, ?>> and hands each entry straight to
+# org.bukkit.permissions.Permission#loadPermission(name, data, PermissionDefault.OP, output)
+# - i.e. the `description` / `default` / `children` keys of plugin.yml, with an implicit `op`
+# default. Exposed back to the plugin through
+# io.papermc.paper.plugin.configuration.PluginMeta#getPermissions(): List<Permission>.
+#
+# Default rationale (SS7 gives the node list but no defaults, so these follow SS7's "suggested
+# behavior" bullets):
+#   * `true`  = harmless for any player: read-only, or gated behind another node anyway.
+#   * `op`    = mutates the world, the shared registry, or other players' assets.
+# Every operation node lists `schemdepot.use` as a child so that granting a single operation node
+# (e.g. only `schemdepot.paste`) also satisfies the root command's `requires(schemdepot.use)`
+# predicate - otherwise such a player would be unable to run any SchemDepot command at all.
+permissions:
+  schemdepot.use:
+    description: Access the /schemdepot (/sd) root command and its help output.
+    # true: the root node on its own only prints the SS5 help text. It reads no registry data and
+    # touches no world state, so gating it would only produce confusing "unknown command" UX.
+    # Every actual operation is still gated by its own node below (SS7).
+    default: true
+
+  schemdepot.list:
+    description: List registered assets with /schemdepot list.
+    # true: read-only. SS5.3 output is name/author/date/size only - never a filesystem path or
+    # UUID (SS21-8) - so it leaks nothing an ordinary player should not see.
+    default: true
+    children:
+      schemdepot.use: true
+
+  schemdepot.info:
+    description: Show a single asset's metadata with /schemdepot info.
+    # true: read-only, same reasoning as schemdepot.list (SS5.4).
+    default: true
+    children:
+      schemdepot.use: true
+
+  schemdepot.paste:
+    description: Paste a registered asset into the world with /schemdepot <name>.
+    # op: writes blocks into the live world (SS5.2/SS11). World mutation must be opt-in, matching
+    # FastAsyncWorldEdit's own op-by-default stance for the commands SchemDepot builds on.
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.add:
+    description: Register the current WorldEdit clipboard as an asset with /schemdepot add.
+    # op: consumes server disk (SS13.1 writes a .schem file) and publishes a name into a shared,
+    # server-wide, first-come-first-served namespace (SS6.2/SS20.1).
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.rename.own:
+    description: Rename assets whose author UUID matches the caller (SS13.3, AC-10).
+    # op: still mutates the shared registry that every other player browses, even though the
+    # ownership check (by UUID, never by name - SS21-4/21-11) limits the blast radius.
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.rename.any:
+    description: Rename any asset, including assets authored by other players.
+    # op: administrative override of another player's asset (SS7, AC-10).
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.remove.own:
+    description: Remove assets whose author UUID matches the caller (SS13.4, AC-10).
+    # op: destructive - deletes the registry row and the backing schematic file.
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.remove.any:
+    description: Remove any asset, including assets authored by other players.
+    # op: destructive and administrative (SS7, AC-10).
+    default: op
+    children:
+      schemdepot.use: true
+
+  schemdepot.admin:
+    description: Grants every SchemDepot permission (SS7).
+    # op: SS7 states "schemdepot.admin grants all SchemDepot permissions". Every node is listed
+    # explicitly below so this is a real grant rather than documentation - a permission plugin can
+    # hand out schemdepot.admin and get the whole set.
+    default: op
+    children:
+      schemdepot.use: true
+      schemdepot.paste: true
+      schemdepot.list: true
+      schemdepot.info: true
+      schemdepot.add: true
+      schemdepot.rename.own: true
+      schemdepot.rename.any: true
+      schemdepot.remove.own: true
+      schemdepot.remove.any: true

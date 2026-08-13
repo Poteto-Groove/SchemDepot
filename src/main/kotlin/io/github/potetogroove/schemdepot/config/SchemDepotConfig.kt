@@ -1,6 +1,8 @@
 package io.github.potetogroove.schemdepot.config
 
 import org.bukkit.configuration.file.FileConfiguration
+import java.nio.file.InvalidPathException
+import java.nio.file.Paths
 import java.util.logging.Logger
 
 /**
@@ -118,7 +120,26 @@ data class SchemDepotConfig(
             )
         }
 
-        private fun requireNonBlankPath(
+        /** Characters that can only appear in a value that is trying to be more than a name. */
+        private val PATH_COMPONENT_SEPARATORS = charArrayOf('/', '\\', ':')
+
+        /**
+         * Validates a `storage.*` value as a **single** file or directory name to be resolved
+         * inside the plugin's own data folder, falling back to [default] with a warning otherwise
+         * (SS16: "Invalid values should be normalized or cause a clear startup error rather than
+         * silent undefined behavior").
+         *
+         * Every one of these values is fed to `dataFolder.resolve(value)`, and `Path.resolve`
+         * happily accepts an absolute path (returning it verbatim) or a `../..` chain. Without
+         * this check, `schematics-directory: "../../../world/region"` or
+         * `database-file: "/etc/passwd"` would point SchemDepot's create/write/delete operations
+         * at arbitrary locations outside the data folder, which is the same class of escape SS21-1
+         * and SS21-10 forbid for asset-derived paths.
+         *
+         * Exposed as `internal` so it can be unit-tested without a Bukkit `FileConfiguration`
+         * (SS27.1); [load] is the only production caller.
+         */
+        internal fun requireNonBlankPath(
             value: String?,
             default: String,
             key: String,
@@ -128,7 +149,48 @@ data class SchemDepotConfig(
                 logger.warning("config.yml: $key must not be blank. Falling back to \"$default\".")
                 return default
             }
+
+            val rejection = pathComponentRejectionReason(value)
+            if (rejection != null) {
+                logger.warning(
+                    "config.yml: $key must be a single file or directory name located directly " +
+                        "inside the plugin data folder, but was \"$value\" ($rejection). " +
+                        "Falling back to \"$default\".",
+                )
+                return default
+            }
+
             return value
+        }
+
+        /**
+         * Returns a human-readable reason why [value] is not a plain single path component, or
+         * `null` if it is one.
+         *
+         * The character check is done before the [Path] check on purpose: `\` and `:` are ordinary
+         * filename characters on Linux, so `Paths.get("..\\..\\world")` would look like a single
+         * harmless name there while meaning traversal on the Windows servers this plugin also has
+         * to be safe on.
+         */
+        private fun pathComponentRejectionReason(value: String): String? {
+            if (value == "." || value == "..") {
+                return "it is a relative-path element, not a name"
+            }
+            if (value.any { it in PATH_COMPONENT_SEPARATORS }) {
+                return "it contains a path separator or a drive letter"
+            }
+            val path = try {
+                Paths.get(value)
+            } catch (e: InvalidPathException) {
+                return "it is not a valid file name on this platform"
+            }
+            if (path.isAbsolute || path.root != null) {
+                return "it is an absolute path"
+            }
+            if (path.nameCount != 1) {
+                return "it contains more than one path element"
+            }
+            return null
         }
     }
 }

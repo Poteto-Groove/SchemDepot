@@ -86,6 +86,38 @@ class AssetService(
     }
 
     // -------------------------------------------------------------------------------------
+    // tab completion (SS18)
+    // -------------------------------------------------------------------------------------
+
+    /**
+     * Display names ([Asset.name]) of every registered asset whose normalized name starts with
+     * [prefix], sorted for stable tab-completion ordering (SS18: "maintain a lightweight
+     * in-memory asset-name index").
+     *
+     * Synchronous and in-memory only: reads [index] directly and never touches SQLite or the
+     * filesystem, so it is safe to call from the Bukkit **main thread** inside a Brigadier
+     * `SuggestionProvider` on every keystroke (SS18: "Do not perform blocking SQLite queries
+     * synchronously for every keystroke"). [prefix] is normalized with [AssetName.normalize]
+     * before matching, so callers may pass Brigadier's `SuggestionsBuilder.getRemainingLowerCase()`
+     * output, or any other casing, unchanged.
+     *
+     * Capped at [MAX_SUGGESTIONS]: a prefix that matches thousands of assets (e.g. an empty
+     * prefix once the registry is large) would otherwise force this call to sort/copy the whole
+     * match set on every keystroke for no benefit, since a Brigadier client only ever renders a
+     * handful of suggestions at once.
+     */
+    fun suggestNames(prefix: String): List<String> {
+        val normalizedPrefix = AssetName.normalize(prefix)
+        return index.entries
+            .asSequence()
+            .filter { it.key.startsWith(normalizedPrefix) }
+            .map { it.value.name }
+            .sorted()
+            .take(MAX_SUGGESTIONS)
+            .toList()
+    }
+
+    // -------------------------------------------------------------------------------------
     // add (SS13.1, AC-01/AC-02/AC-03)
     // -------------------------------------------------------------------------------------
 
@@ -238,7 +270,47 @@ class AssetService(
                 e,
             )
             cleanupOrphanSchematic(id, validName.name)
-            AddResult.InternalError(e)
+            if (nameWasTakenConcurrently(validName.normalizedName)) {
+                logger.warning(
+                    "Insert of asset '${validName.name}' ($id) lost a concurrent race against " +
+                        "another registration of the same name; reporting it as a duplicate name.",
+                )
+                AddResult.DuplicateName(validName.name)
+            } else {
+                AddResult.InternalError(e)
+            }
+        }
+    }
+
+    /**
+     * Re-checks the registry after a failed insert to distinguish SS20.1's "two players registered
+     * the same name at the same time" case from a genuine internal error.
+     *
+     * Both racers can pass the [AssetRepository.existsByName] pre-check in [performAdd] before
+     * either has committed (the worker executor really is multi-threaded), so the loser's INSERT is
+     * what fails - on SQLite, against the `UNIQUE(normalized_name)` constraint. SS20.1 requires the
+     * loser to get a duplicate-name error rather than a generic internal error.
+     *
+     * The decision is made by re-querying the registry rather than by inspecting the driver's
+     * exception type or SQLite result code on purpose: `org.sqlite` is relocated into
+     * `io.github.potetogroove.schemdepot.libs.sqlite` by the shadow jar (see build.gradle.kts), so
+     * neither `org.sqlite.SQLiteException` nor its error codes are stable identifiers here, and
+     * [repository] is an interface that need not be SQLite-backed at all.
+     *
+     * Never throws: a failure of the re-check itself is logged and treated as "not a duplicate", so
+     * the caller falls back to reporting the original insert failure.
+     */
+    private fun nameWasTakenConcurrently(normalizedName: String): Boolean {
+        return try {
+            repository.existsByName(normalizedName)
+        } catch (t: Throwable) {
+            logger.log(
+                Level.WARNING,
+                "Could not re-check whether '$normalizedName' was registered concurrently; " +
+                    "reporting the original insert failure instead.",
+                t,
+            )
+            false
         }
     }
 
@@ -523,7 +595,26 @@ class AssetService(
 
         val updatedAt = Instant.now()
         return try {
-            repository.updateName(asset.id, newName.name, newName.normalizedName, updatedAt)
+            val updatedRows = repository.updateName(
+                asset.id,
+                newName.name,
+                newName.normalizedName,
+                updatedAt,
+            )
+            if (updatedRows == 0) {
+                // The row vanished from the database (the single source of truth, SS19/SS36
+                // invariant 4) between the index lookup in `rename` and this update. Reporting
+                // Success here would publish a brand-new index entry for a row that does not
+                // exist. NotFound keeps the caller's `result is Success` guard from touching the
+                // index at all; the stale entry under the *old* name survives until the next
+                // restart rebuilds the index from SQLite (SS19).
+                logger.warning(
+                    "Rename of asset ${asset.name} (${asset.id}) updated 0 rows: the registry row " +
+                        "no longer exists. The in-memory index still holds a stale entry for it " +
+                        "and will be rebuilt from SQLite on the next startup.",
+                )
+                return RenameResult.NotFound(asset.name)
+            }
             logger.info("Renamed asset ${asset.name} -> ${newName.name} (${asset.id}) by $callerUuid")
             RenameResult.Success(
                 asset.copy(
@@ -618,8 +709,35 @@ class AssetService(
         }
 
         return try {
-            repository.delete(asset.id)
+            val deletedRows = repository.delete(asset.id)
+            if (deletedRows == 0) {
+                // The registry row was already gone before this delete ran, so nothing was
+                // removed and this is not a Success (see performRename for the same reasoning).
+                // The file, if it was moved above, deliberately stays in trash/ - the startup
+                // trash sweep (SchematicStorage.cleanupTrashDirectory) will collect it.
+                logger.warning(
+                    "Removal of asset ${asset.name} (${asset.id}) deleted 0 rows: the registry " +
+                        "row no longer exists (trashResult=$trashResult). The in-memory index " +
+                        "still holds a stale entry for it and will be rebuilt from SQLite on the " +
+                        "next startup.",
+                )
+                return RemoveResult.NotFound(asset.name)
+            }
             logger.info("Removed asset ${asset.name} (${asset.id}) by $callerUuid")
+
+            if (trashResult is SchematicStorage.TrashMoveResult.Failed) {
+                // SS13.4-6: the registry row is gone but the schematic never made it to trash, so
+                // `schematics/<uuid>.schem` is now referenced by nothing at all. This must be
+                // stated explicitly - the WARNING logged before the delete only says the move
+                // failed, not that the file has since become an orphan. Server log only: the
+                // absolute path must never reach a player (SS21-8).
+                logger.severe(
+                    "Asset ${asset.name} (${asset.id}) was removed from the registry, but its " +
+                        "schematic could not be moved to trash beforehand, so " +
+                        "${schematicStorage.schematicPathFor(asset.id)} is now an orphan file that " +
+                        "nothing references. Manual cleanup required.",
+                )
+            }
 
             if (trashResult is SchematicStorage.TrashMoveResult.Moved) {
                 val deleteResult = schematicStorage.deleteFromTrash(asset.id)
@@ -714,4 +832,9 @@ class AssetService(
 
     /** Adapts a caught [Throwable] to the [Exception] the `InternalError` result cases expect. */
     private fun asException(t: Throwable): Exception = t as? Exception ?: RuntimeException(t)
+
+    private companion object {
+        /** Upper bound on the results returned by [suggestNames] (see its KDoc). */
+        const val MAX_SUGGESTIONS = 100
+    }
 }

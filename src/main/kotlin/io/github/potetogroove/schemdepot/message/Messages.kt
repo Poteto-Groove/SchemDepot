@@ -8,6 +8,7 @@ import net.kyori.adventure.text.event.HoverEvent
 import net.kyori.adventure.text.format.NamedTextColor
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * Single authoritative source for every SchemDepot player-facing message
@@ -168,7 +169,13 @@ object Messages {
     }
 
     private fun listRow(asset: Asset): Component {
-        val rowText = "%-16s %-14s %dx%dx%d".format(
+        // Locale.ROOT, not the JVM default locale: `"%d".format(x)` uses Locale.getDefault(), so on
+        // a server started with e.g. -Duser.language=ar / th the block dimensions would render in
+        // non-ASCII digits (and grouping separators would follow the server's locale too). Asset
+        // sizes are data, not prose, and must look identical on every server.
+        val rowText = String.format(
+            Locale.ROOT,
+            "%-16s %-14s %dx%dx%d",
             asset.name,
             asset.authorName,
             asset.sizeX,
