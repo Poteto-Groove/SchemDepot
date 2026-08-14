@@ -45,7 +45,9 @@ import java.util.logging.Logger
  * [paste] still need a live `org.bukkit.entity.Player`/WorldEdit platform for their main-thread
  * prefix, so their worker-thread cores are additionally exposed as `internal` methods
  * ([performAdd], [resolveAndLoadClipboard]) that unit tests can call directly, bypassing the
- * Bukkit-dependent part. Full end-to-end coverage of [add]/[paste] is deferred to the Phase 7
+ * Bukkit-dependent part. [paste]'s [PasteService.PasteResult] -> [PasteResult] translation is
+ * likewise exposed as [mapPasteOutcome], since it is pure data mapping with no Bukkit/WorldEdit
+ * dependency of its own. Full end-to-end coverage of [add]/[paste] is deferred to the Phase 7
  * integration pass (design doc SS29 Phase 7).
  */
 class AssetService(
@@ -394,13 +396,7 @@ class AssetService(
                                 target,
                                 config.paste,
                             )
-                            callback(
-                                when (pasteOutcome) {
-                                    is PasteService.PasteResult.Success -> PasteResult.Success(asset)
-                                    is PasteService.PasteResult.Failed ->
-                                        PasteResult.InternalError(pasteOutcome.cause)
-                                },
-                            )
+                            callback(mapPasteOutcome(asset, pasteOutcome))
                         }
                         ClipboardLoad.Unavailable -> callback(PasteResult.AssetFileUnavailable(asset))
                     }
@@ -448,6 +444,20 @@ class AssetService(
             -> ClipboardLoad.Unavailable
         }
     }
+
+    /**
+     * Translates a [PasteService.PasteResult] into the [PasteResult] the command layer renders
+     * (SS17). Touches no Bukkit/WorldEdit API - pure data mapping - so it is exposed as `internal`
+     * purely to let unit tests exercise the [PasteService.PasteResult.Rejected] branch without a
+     * live Bukkit `Player`/WorldEdit platform, which [pasteService] itself requires (SS27.1).
+     * Production callers must go through [paste].
+     */
+    internal fun mapPasteOutcome(asset: Asset, outcome: PasteService.PasteResult): PasteResult =
+        when (outcome) {
+            is PasteService.PasteResult.Success -> PasteResult.Success(asset)
+            is PasteService.PasteResult.Rejected ->
+                PasteResult.PasteRejected(outcome.cause, outcome.safeReason)
+        }
 
     // -------------------------------------------------------------------------------------
     // list (SS5.3, SS27.1 pagination)

@@ -198,6 +198,7 @@ class SchemDepotCommand(private val assetService: AssetService) {
                 PasteResult.NoPermission -> player.sendMessage(Messages.noPermissionPaste())
                 is PasteResult.NotFound -> player.sendMessage(Messages.notFound(result.name))
                 is PasteResult.AssetFileUnavailable -> player.sendMessage(Messages.assetFileUnavailable())
+                is PasteResult.PasteRejected -> player.sendMessage(Messages.pasteNotAllowed(result.safeReason))
                 is PasteResult.InternalError -> player.sendMessage(Messages.internalError())
             }
         }

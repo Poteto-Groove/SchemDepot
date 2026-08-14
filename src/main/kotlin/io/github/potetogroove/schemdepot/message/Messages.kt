@@ -87,6 +87,30 @@ object Messages {
     fun assetFileUnavailable(): Component =
         error("The asset file is missing or corrupted. Contact an administrator.")
 
+    /**
+     * WorldEdit/FAWE itself rejected or failed to complete the paste (e.g. a region-protection
+     * plugin, an editable-region restriction, or a missing WorldEdit permission) rather than a
+     * SchemDepot bug, so this deliberately does not say "contact an administrator" - the player
+     * may be able to resolve it themselves. [reason], when non-null, is appended verbatim; it
+     * must already be pre-vetted as safe to show (see
+     * [io.github.potetogroove.schemdepot.asset.AssetResult.PasteResult.PasteRejected]'s KDoc) -
+     * this function performs no further filtering of it.
+     *
+     * Without a [reason]:
+     * `[SchemDepot] Your paste was not allowed by WorldEdit/FAWE. Check your WorldEdit/FAWE
+     * permissions and region restrictions at this location.`
+     *
+     * With a [reason]:
+     * `[SchemDepot] Your paste was not allowed by WorldEdit/FAWE. Check your WorldEdit/FAWE
+     * permissions and region restrictions at this location. Reason: <reason>`
+     */
+    fun pasteNotAllowed(reason: String?): Component {
+        val base = "Your paste was not allowed by WorldEdit/FAWE. Check your WorldEdit/FAWE " +
+            "permissions and region restrictions at this location."
+        val text = if (reason.isNullOrBlank()) base else "$base Reason: $reason"
+        return error(text)
+    }
+
     // ---------------------------------------------------------------------------------------
     // Additional messages - not literally specified by SS17, kept in the same tone (SS17 tail:
     // "Messages should remain concise", never expose raw exceptions/paths/UUIDs).

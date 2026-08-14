@@ -57,6 +57,17 @@ sealed interface PasteResult {
 
     /** The WorldEdit paste itself failed unexpectedly. [cause] is safe to log, not to show. */
     data class InternalError(val cause: Exception) : PasteResult
+
+    /**
+     * WorldEdit/FAWE itself rejected or failed to complete the paste (e.g. a region-protection
+     * plugin, an editable-region restriction, or a missing WorldEdit permission) - a legitimate
+     * WorldEdit-side decision the player may be able to resolve, not a SchemDepot bug, and
+     * therefore distinct from [InternalError]. [cause] is safe to log, never to show verbatim
+     * (SS21-8). [safeReason], when non-null, is WorldEdit's own user-facing exception message
+     * ([io.github.potetogroove.schemdepot.worldedit.PasteService.PasteResult.Rejected]'s KDoc)
+     * and may be shown to the player as-is; when null, only a generic message may be shown.
+     */
+    data class PasteRejected(val cause: Exception, val safeReason: String?) : PasteResult
 }
 
 /** Result of [AssetService.list] (SS5.3, SS27.1 pagination). */

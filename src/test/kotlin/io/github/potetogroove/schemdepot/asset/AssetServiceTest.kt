@@ -450,6 +450,66 @@ class AssetServiceTest {
     }
 
     // -------------------------------------------------------------------------------------
+    // mapPasteOutcome - WorldEdit/FAWE rejecting or failing a paste must not be reported as a
+    // generic InternalError (UX fix: a region-restriction denial is not a SchemDepot bug and must
+    // not tell the player to "contact an administrator"). PasteService.pasteForPlayer itself
+    // cannot be exercised without a live Bukkit Player/WorldEdit platform (see its own KDoc), so
+    // this suite covers the pure PasteService.PasteResult -> AssetResult.PasteResult translation
+    // exposed as AssetService.mapPasteOutcome instead.
+    // -------------------------------------------------------------------------------------
+
+    @Test
+    fun `mapPasteOutcome maps a WorldEditException rejection to PasteRejected with its message as the safe reason`() {
+        // worldedit-bukkit is only `testRuntimeOnly` here (see build.gradle.kts), so this test
+        // cannot reference com.sk89q.worldedit.WorldEditException at compile time. A plain
+        // Exception stands in for it: mapPasteOutcome only forwards whatever safeReason
+        // PasteService.pasteForPlayer already decided was safe (its own KDoc/tests own the
+        // decision of *when* a reason is safe) - the exception's runtime type is irrelevant here.
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree")
+        val cause = Exception("No allowed region for this edit.")
+
+        val result = service.mapPasteOutcome(
+            asset,
+            PasteService.PasteResult.Rejected(cause, safeReason = cause.message),
+        )
+
+        val rejected = result as? PasteResult.PasteRejected
+        assertTrue(rejected != null, "expected PasteRejected but was $result")
+        assertEquals("No allowed region for this edit.", rejected!!.safeReason)
+        assertEquals(cause, rejected.cause)
+    }
+
+    @Test
+    fun `mapPasteOutcome maps a non-WorldEditException rejection (e g a FAWE exception) to PasteRejected with no reason`() {
+        // Models FAWE's FaweException: a RuntimeException that is *not* a WorldEditException
+        // (verified via javap - see PasteService.pasteForPlayer's catch clauses), so
+        // PasteService.pasteForPlayer never has a safe message to hand back for it.
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree")
+        val cause = IllegalStateException("No allowed region (bypass with /wea, or disable region-restrictions)")
+
+        val result = service.mapPasteOutcome(
+            asset,
+            PasteService.PasteResult.Rejected(cause, safeReason = null),
+        )
+
+        val rejected = result as? PasteResult.PasteRejected
+        assertTrue(rejected != null, "expected PasteRejected but was $result")
+        assertEquals(null, rejected!!.safeReason)
+        assertEquals(cause, rejected.cause)
+    }
+
+    @Test
+    fun `mapPasteOutcome maps a Success outcome to Success with the original asset`() {
+        val asset = sampleAsset(name = "OakTree", normalizedName = "oaktree")
+
+        val result = service.mapPasteOutcome(asset, PasteService.PasteResult.Success)
+
+        val success = result as? PasteResult.Success
+        assertTrue(success != null, "expected Success but was $result")
+        assertEquals(asset, success!!.asset)
+    }
+
+    // -------------------------------------------------------------------------------------
     // list pagination (config.list.pageSize)
     // -------------------------------------------------------------------------------------
 

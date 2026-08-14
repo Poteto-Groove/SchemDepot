@@ -76,11 +76,23 @@ class PasteService(
         data object Success : PasteResult
 
         /**
-         * The paste failed. Already logged with context; [cause] must not be shown verbatim to
-         * players (SS21-8). Any blocks that were changed before the failure remain undoable,
-         * because the edit is registered in WorldEdit history regardless of the outcome.
+         * WorldEdit/FAWE itself rejected or failed to complete the paste (e.g. a region
+         * protection plugin, an editable-region restriction, or a missing WorldEdit permission) -
+         * this is a legitimate WorldEdit-side decision, not a SchemDepot bug. Already logged with
+         * full context; [cause] must not be shown verbatim to players (SS21-8). Any blocks that
+         * were changed before the failure remain undoable, because the edit is registered in
+         * WorldEdit history regardless of the outcome.
+         *
+         * [safeReason] is populated **only** when [cause] was caught as a
+         * [com.sk89q.worldedit.WorldEditException] - WorldEdit's own public, user-facing
+         * exception type - and holds exactly its `message`, which is safe to show a player
+         * because WorldEdit itself would surface it for a raw `//paste`. For every other
+         * [RuntimeException] (this deliberately includes FAWE's own exception types, which
+         * SchemDepot must never reference by type - AC-13), [safeReason] is null and the caller
+         * must fall back to a generic message: an arbitrary `RuntimeException`'s message could
+         * contain internal details (e.g. a file path) that must not reach the player.
          */
-        data class Failed(val cause: Exception) : PasteResult
+        data class Rejected(val cause: Exception, val safeReason: String?) : PasteResult
     }
 
     /**
@@ -162,7 +174,7 @@ class PasteService(
      *   (`EditSession implements AutoCloseable`, verified).
      * - The [clipboard] is not closed here; ownership stays with the caller.
      *
-     * Never throws: failures are returned as [PasteResult.Failed] after being logged (SS30-20).
+     * Never throws: failures are returned as [PasteResult.Rejected] after being logged (SS30-20).
      */
     fun pasteForPlayer(
         player: Player,
@@ -202,15 +214,27 @@ class PasteService(
                     "at ${target.x()}/${target.y()}/${target.z()} in world ${targetWorld.name}.",
                 e,
             )
-            PasteResult.Failed(e)
+            PasteResult.Rejected(e, safeReason = e.message)
         } catch (e: RuntimeException) {
+            // Deliberately not narrowed to any FAWE-specific exception type (AC-13: FAWE's
+            // packages must never be referenced). FAWE's own paste-rejection exception extends
+            // RuntimeException directly, not WorldEditException, so region-restriction/permission
+            // rejections raised by FAWE land here. Since this branch cannot tell a legitimate
+            // WorldEdit/FAWE-side rejection apart from a genuinely unexpected bug by type alone,
+            // and `e.message` is not guaranteed safe to show (SS21-8), no reason is surfaced to
+            // the player.
             logger.log(
                 Level.WARNING,
-                "Unexpected failure while pasting an asset for player ${player.uniqueId} " +
-                    "at ${target.x()}/${target.y()}/${target.z()} in world ${targetWorld.name}.",
+                // Not phrased as an unexpected failure: the overwhelmingly common cause here is a
+                // legitimate FAWE-side rejection (region restrictions, a missing WorldEdit
+                // permission), which an administrator reading the log should not mistake for a
+                // SchemDepot fault. The attached stack trace still identifies a genuine bug.
+                "Paste rejected while pasting an asset for player ${player.uniqueId} " +
+                    "at ${target.x()}/${target.y()}/${target.z()} in world ${targetWorld.name}. " +
+                    "This is usually a WorldEdit/FAWE permission or region restriction.",
                 e,
             )
-            PasteResult.Failed(e)
+            PasteResult.Rejected(e, safeReason = null)
         }
     }
 }
