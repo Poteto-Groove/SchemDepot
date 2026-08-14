@@ -91,11 +91,11 @@ plugins/SchemDepot/
 ```text
 > /sd list
 ┌──────────────────────────────────────────────────────────┐
-│ SchemDepot — Assets 1/2                                   │  ← 金色 (GOLD)
-│                                                             │
-│ OakTree          warasugi       13x18x12                  │  ← 水色 (AQUA)
-│ StoneBridge      warasugi       9x5x40                     │     クリックで /sd <name> を補完
-│ SpawnPlatform    Notch          32x1x32                    │     ホバーで Author/Created/Size
+│ SchemDepot — Assets 1/2                                  │  ← 金色 (GOLD)
+│                                                          │
+│ OakTree          warasugi       13x18x12                 │  ← 水色 (AQUA)
+│ StoneBridge      warasugi       9x5x40                   │     クリックで /sd <name> を補完
+│ SpawnPlatform    Notch          32x1x32                  │     ホバーで Author/Created/Size
 └──────────────────────────────────────────────────────────┘
 
 > /sd info OakTree
@@ -280,7 +280,7 @@ src/main/kotlin/io/github/potetogroove/schemdepot/
 
 ## 📝 あとがき
 
-身内の建築鯖で `//schem save` / `//schem load` を使うたび、「これ結局自分のPCにしか無いファイルだよな」と地味に不便を感じていたのが発端です。誰かが作った建物を別の誰かがサッと呼び出せる、名前付きの共有棚が欲しかっただけなんですが、気付いたらスレッドモデルだのユニットテスト112本だのを書くはめになっていました。クリップボードを奪わないことにはやたら執着したので、そこだけは自信を持ってお勧めできます。
+身内の建築鯖で `//schem save` / `//schem load` を使うたび、「これ結局自分のPCにしか無いファイルだよな」と地味に不便を感じていたのが発端です。誰かが作った建物を別の誰かがサッと呼び出せる、名前付きの共有棚が欲しかっただけなんですが、気付いたらこうなってました、これで簡単に細かいものを共有できてQOL上昇だね。クリップボードを奪わないことにはやたら執着したので、そこだけは自信を持ってお勧めできます。
 
 ---
 
