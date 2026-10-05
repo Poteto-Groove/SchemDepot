@@ -10,8 +10,9 @@ shadow = "9.6.1"
 runPaper = "3.0.2"
 # Paper API. Exact literal version string confirmed by fetching
 # https://repo.papermc.io/repository/maven-public/io/papermc/paper/paper-api/maven-metadata.xml
-# and taking the newest "-stable" build in the 26.1.2 line.
-paperApi = "26.1.2.build.74-stable"
+# Paper 26.2 line. 26.2.build.129-stable is the newest "-stable" build confirmed to exist
+# (offered by Dependabot on 2026-09-28; repo.papermc.io was unreachable from the build sandbox).
+paperApi = "26.2.build.129-stable"
 # WorldEdit public API (Bukkit platform), from the EngineHub Maven repository.
 # NOTE: FAWE 2.15.3 does NOT declare a versioned com.sk89q.worldedit:worldedit-bukkit
 # dependency in its published POM (FastAsyncWorldEdit-Core/-Bukkit 2.15.3) - it is a

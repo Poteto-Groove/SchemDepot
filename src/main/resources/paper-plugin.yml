@@ -2,7 +2,7 @@ name: SchemDepot
 version: '${version}'
 main: io.github.potetogroove.schemdepot.SchemDepotPlugin
 description: A lightweight collaborative FastAsyncWorldEdit asset registry.
-api-version: '26.1'
+api-version: '26.2'
 
 dependencies:
   server:
