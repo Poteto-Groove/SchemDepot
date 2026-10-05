@@ -135,7 +135,7 @@ class SchemDepotPlugin : JavaPlugin() {
             // io.papermc.paper.command.brigadier.Commands#register(
             //   com.mojang.brigadier.tree.LiteralCommandNode<CommandSourceStack>,
             //   java.lang.String, java.util.Collection<java.lang.String>): java.util.Set<String>
-            // (javap, paper-api 26.1.2.build.74-stable).
+            // (javap, paper-api 26.1.2.build.74-stable; unchanged in the 26.2 sources).
             val labels = event.registrar().register(
                 schemDepotCommand.buildNode(),
                 "SchemDepot asset registry",

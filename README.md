@@ -8,7 +8,7 @@ FastAsyncWorldEdit (FAWE) のクリップボードを、名前で呼び出せる
 `/sd <name>` で誰でも直接ペーストでき、ペーストしても本人・他プレイヤーいずれのクリップボードも一切変化しません。
 
 <p>
-<img src="https://img.shields.io/badge/Paper-26.1.2%2B-blue" alt="Paper 26.1.2+">
+<img src="https://img.shields.io/badge/Paper-26.2%2B-blue" alt="Paper 26.2+">
 <img src="https://img.shields.io/badge/Java-25-blue" alt="Java 25">
 <img src="https://img.shields.io/badge/FastAsyncWorldEdit-required-critical" alt="FastAsyncWorldEdit required">
 <img src="https://img.shields.io/badge/Clipboard-never%20touched-2ea44f" alt="Clipboard never touched">
@@ -40,11 +40,11 @@ FastAsyncWorldEdit (FAWE) のクリップボードを、名前で呼び出せる
 
 | 項目 | バージョン |
 |---|---|
-| Paper / Purpur | 26.1.2 (build 74) 以降 |
+| Paper / Purpur | 26.2 以降 |
 | Java | 25 |
 | FastAsyncWorldEdit | 2.15.3（**必須**） |
 
-動作確認環境: Paper 26.1.2 (build 74) + FastAsyncWorldEdit 2.15.3 + Java 25。本番想定は Debian 12 上の Purpur 26.1.2 です。
+ビルド対象: paper-api 26.2 (build 129) + FastAsyncWorldEdit 2.15.3（26.2 対応が入ったリリース）+ Java 25。本番想定は Debian 12 上の Purpur 26.2 です。
 
 > [!NOTE]
 > FastAsyncWorldEdit は `paper-plugin.yml` 上で `required: true` かつ `load: BEFORE` の依存として宣言されています。導入されていない、あるいは起動順が異なる場合 SchemDepot は正常に動作しません。
@@ -240,7 +240,7 @@ flowchart LR
 ./gradlew runServer
 ```
 
-Paper 26.1.2 と FastAsyncWorldEdit 2.15.3 を自動でダウンロードして起動します。
+Paper 26.2 と FastAsyncWorldEdit 2.15.3 を自動でダウンロードして起動します。
 
 ### 主要なソースファイル
 

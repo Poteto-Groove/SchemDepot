@@ -84,7 +84,7 @@ tasks.build {
 }
 
 tasks.runServer {
-    minecraftVersion("26.1.2")
+    minecraftVersion("26.2")
 
     // Be explicit about which artifact the test server loads: the shaded jar, never the thin one.
     pluginJars(tasks.shadowJar.flatMap { it.archiveFile })
@@ -93,6 +93,8 @@ tasks.runServer {
         // FastAsyncWorldEdit 2.15.3, verified to exist on Modrinth
         // (https://modrinth.com/plugin/fastasyncworldedit/version/2.15.3, version id Ad3NnAQP,
         // supports Paper 26.1.x / 26.2) at the time this build was configured (2026-08-11).
+        // 2.15.3 is the release whose notes say "Introduce 26.2 support", so it stays pinned
+        // for the 26.2 test server.
         modrinth("fastasyncworldedit", "Ad3NnAQP")
     }
 }
